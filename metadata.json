@@ -1,0 +1,5 @@
+{
+  "name": "Bulk Watermark Studio",
+  "description": "A privacy-first, client-side tool for photographers to batch apply watermarks to images. Features drag-and-drop, custom text/logo placement, live previews, and ZIP export.",
+  "requestFramePermissions": []
+}
