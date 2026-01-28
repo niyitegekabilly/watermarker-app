@@ -1,4 +1,4 @@
-const CACHE_NAME = 'watermark-studio-v1';
+const CACHE_NAME = 'watermark-studio-v2';
 const ASSETS = [
   '/',
   '/index.html',

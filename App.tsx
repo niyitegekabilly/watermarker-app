@@ -27,6 +27,7 @@ const App: React.FC = () => {
   const [settings, setSettings] = useState<WatermarkSettings>(DEFAULT_SETTINGS);
   const [previewFile, setPreviewFile] = useState<ProcessedFile | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingAction, setProcessingAction] = useState<'batch' | 'apply' | null>(null);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -62,17 +63,141 @@ const App: React.FC = () => {
 
   const updateSettings = (partial: Partial<WatermarkSettings>) => {
     setSettings(prev => ({ ...prev, ...partial }));
+    
+    // Invalidate any "Done" status files because settings have changed
+    // This forces a re-process/re-review before downloading again
+    setFiles(prevFiles => prevFiles.map(f => {
+      if (f.status === 'done' || f.status === 'error') {
+        URL.revokeObjectURL(f.previewUrl);
+        return {
+          ...f,
+          status: 'idle',
+          processedBlob: undefined,
+          errorMsg: undefined,
+          previewUrl: URL.createObjectURL(f.originalFile)
+        };
+      }
+      return f;
+    }));
   };
 
   const resetSettings = () => {
     setSettings(DEFAULT_SETTINGS);
+    // Also invalidate files on reset
+    setFiles(prevFiles => prevFiles.map(f => {
+      if (f.status === 'done' || f.status === 'error') {
+        URL.revokeObjectURL(f.previewUrl);
+        return {
+          ...f,
+          status: 'idle',
+          processedBlob: undefined,
+          errorMsg: undefined,
+          previewUrl: URL.createObjectURL(f.originalFile)
+        };
+      }
+      return f;
+    }));
   };
 
-  // --- Batch Processing ---
+  // --- Actions ---
+
+  const handleDownloadFile = (file: ProcessedFile) => {
+    if (file.status !== 'done' || !file.processedBlob) return;
+    
+    const extMap: Record<string, string> = {
+        'image/jpeg': 'jpg',
+        'image/png': 'png',
+        'image/webp': 'webp'
+    };
+    const ext = extMap[settings.format] || 'jpg';
+    
+    const originalName = file.originalFile.name;
+    const nameWithoutExt = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
+    const filename = `${nameWithoutExt}-watermarked.${ext}`;
+    
+    saveAs(file.processedBlob, filename);
+  };
+
+  const handleApplyPreview = (blob: Blob) => {
+    if (previewFile) {
+      setFiles(prev => prev.map(f => {
+        if (f.id === previewFile.id) {
+           URL.revokeObjectURL(f.previewUrl);
+           return { 
+             ...f, 
+             status: 'done', 
+             processedBlob: blob,
+             errorMsg: undefined,
+             previewUrl: URL.createObjectURL(blob) // Update thumbnail to show watermarked version
+           };
+        }
+        return f;
+      }));
+      setPreviewFile(null);
+    }
+  };
+
+  // --- Apply to All ---
+
+  const applyToAll = async () => {
+    const targetFiles = files.filter(f => f.status === 'idle' || f.status === 'error');
+    if (targetFiles.length === 0) return;
+
+    setIsProcessing(true);
+    setProcessingAction('apply');
+    setProgress({ current: 0, total: targetFiles.length });
+    const CONCURRENCY = 3;
+
+    const processChunk = async (chunk: ProcessedFile[]) => {
+       const promises = chunk.map(async (file) => {
+         try {
+             setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'processing', errorMsg: undefined } : f));
+             
+             await new Promise(r => setTimeout(r, 20));
+             
+             const blob = await applyWatermark(file.originalFile, settings);
+             if (!blob) throw new Error("Generated blob is invalid");
+
+             setFiles(prev => prev.map(f => {
+               if (f.id === file.id) {
+                 URL.revokeObjectURL(f.previewUrl);
+                 return { 
+                   ...f, 
+                   status: 'done', 
+                   processedBlob: blob,
+                   errorMsg: undefined, 
+                   previewUrl: URL.createObjectURL(blob) 
+                 };
+               }
+               return f;
+             }));
+
+         } catch (error: any) {
+           console.error(`Error processing file ${file.id}:`, error);
+           const msg = error.message || 'Processing Failed';
+           setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'error', errorMsg: msg } : f));
+         } finally {
+           setProgress(prev => ({ ...prev, current: prev.current + 1 }));
+         }
+       });
+       return Promise.all(promises);
+    };
+
+    for (let i = 0; i < targetFiles.length; i += CONCURRENCY) {
+      const chunk = targetFiles.slice(i, i + CONCURRENCY);
+      await processChunk(chunk);
+    }
+
+    setIsProcessing(false);
+    setProcessingAction(null);
+  };
+
+  // --- Batch Processing (Export) ---
 
   const processBatch = async () => {
     if (files.length === 0) return;
     setIsProcessing(true);
+    setProcessingAction('batch');
     setProgress({ current: 0, total: files.length });
     const zip = new JSZip();
     const CONCURRENCY = 3;
@@ -81,30 +206,48 @@ const App: React.FC = () => {
     const processChunk = async (chunk: ProcessedFile[]) => {
        const promises = chunk.map(async (file) => {
          try {
-           // Skip if already processed
-           if (file.status === 'done' && file.processedBlob) {
-             const ext = settings.format.split('/')[1];
-             zip.file(`watermarked_${file.originalFile.name.split('.')[0]}.${ext}`, file.processedBlob);
-             setProgress(prev => ({ ...prev, current: prev.current + 1 }));
-             return;
+           let blob = file.processedBlob;
+
+           // If not already processed (or if we want to ensure latest settings, but updateSettings handles invalidation)
+           // If status is idle, we must process.
+           if (file.status !== 'done' || !blob) {
+             setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'processing', errorMsg: undefined } : f));
+             
+             // Artificial delay to let UI breathe
+             await new Promise(r => setTimeout(r, 20));
+             
+             blob = await applyWatermark(file.originalFile, settings);
            }
 
-           setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'processing' } : f));
-           
-           // Artificial delay to let UI breathe if needed, usually canvas is heavy enough
-           await new Promise(r => setTimeout(r, 20));
+           if (!blob) throw new Error("Generated blob is invalid");
 
-           const blob = await applyWatermark(file.originalFile, settings);
-           
            // Add to zip
            const ext = settings.format.split('/')[1];
-           // Simple duplicate name handling could be added here
            zip.file(`watermarked_${file.originalFile.name.split('.')[0]}.${ext}`, blob);
 
-           setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'done', processedBlob: blob } : f));
-         } catch (error) {
-           console.error(error);
-           setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'error', errorMsg: 'Failed' } : f));
+           // Update file status to DONE and update Thumbnail
+           setFiles(prev => prev.map(f => {
+             if (f.id === file.id) {
+               // Only update URL if it was generated fresh or different
+               if (f.status !== 'done') {
+                 URL.revokeObjectURL(f.previewUrl);
+                 return { 
+                   ...f, 
+                   status: 'done', 
+                   processedBlob: blob,
+                   errorMsg: undefined, 
+                   previewUrl: URL.createObjectURL(blob!) 
+                 };
+               }
+               return f;
+             }
+             return f;
+           }));
+
+         } catch (error: any) {
+           console.error(`Error processing file ${file.id}:`, error);
+           const msg = error.message || 'Processing Failed';
+           setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'error', errorMsg: msg } : f));
          } finally {
            setProgress(prev => ({ ...prev, current: prev.current + 1 }));
          }
@@ -120,22 +263,20 @@ const App: React.FC = () => {
 
     // Generate Zip
     try {
-      const content = await zip.generateAsync({ type: 'blob' });
-      saveAs(content, 'watermarked_images.zip');
+      if (Object.keys(zip.files).length > 0) {
+        const content = await zip.generateAsync({ type: 'blob' });
+        saveAs(content, 'watermarked_images.zip');
+      } else {
+        if (files.length > 0) {
+            alert("No images were successfully processed.");
+        }
+      }
     } catch (e) {
       alert("Failed to create ZIP file");
     }
 
     setIsProcessing(false);
-  };
-
-  const handleApplyPreview = (blob: Blob) => {
-    if (previewFile) {
-      setFiles(prev => prev.map(f => 
-        f.id === previewFile.id ? { ...f, status: 'done', processedBlob: blob } : f
-      ));
-      setPreviewFile(null);
-    }
+    setProcessingAction(null);
   };
 
   // --- UI ---
@@ -157,6 +298,8 @@ const App: React.FC = () => {
     const bytes = files.reduce((acc, f) => acc + f.originalFile.size, 0);
     return (bytes / (1024 * 1024)).toFixed(1); // MB
   };
+
+  const hasPending = files.some(f => f.status === 'idle' || f.status === 'error');
 
   return (
     <div className="flex h-screen bg-gray-950 text-gray-100 font-sans">
@@ -211,15 +354,37 @@ const App: React.FC = () => {
                  >
                    <IconTrash size={18} />
                  </button>
+                 
+                 <button 
+                   onClick={applyToAll}
+                   disabled={isProcessing || !hasPending}
+                   className={`flex items-center px-4 py-2 rounded-md text-sm font-medium shadow-md transition-all
+                     ${
+                       isProcessing
+                         ? (processingAction === 'apply' ? 'bg-indigo-800 text-indigo-200 cursor-wait' : 'bg-gray-800 text-gray-500 opacity-50 cursor-not-allowed')
+                         : (!hasPending ? 'bg-gray-800 text-gray-600 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-500 text-white')
+                     }`}
+                 >
+                    {isProcessing && processingAction === 'apply' ? (
+                       <span>{progress.current}/{progress.total}</span>
+                    ) : (
+                       <>
+                         <IconCheck size={18} className="mr-2" /> Apply All
+                       </>
+                    )}
+                 </button>
+
                  <button 
                    onClick={processBatch}
                    disabled={isProcessing}
                    className={`flex items-center px-6 py-2 rounded-md text-sm font-bold shadow-lg transition-all
-                     ${isProcessing 
-                       ? 'bg-blue-800 text-blue-200 cursor-wait' 
-                       : 'bg-blue-600 hover:bg-blue-500 text-white'}`}
+                     ${
+                       isProcessing
+                         ? (processingAction === 'batch' ? 'bg-blue-800 text-blue-200 cursor-wait' : 'bg-gray-800 text-gray-500 opacity-50 cursor-not-allowed')
+                         : 'bg-blue-600 hover:bg-blue-500 text-white'
+                     }`}
                  >
-                   {isProcessing ? (
+                   {isProcessing && processingAction === 'batch' ? (
                      <span>Processing {progress.current}/{progress.total}</span>
                    ) : (
                      <>
@@ -251,7 +416,7 @@ const App: React.FC = () => {
               {files.map(file => (
                 <div 
                   key={file.id} 
-                  className="group relative aspect-square bg-gray-900 rounded-lg overflow-hidden border border-gray-800 hover:border-gray-600 transition-all shadow-sm"
+                  className={`group relative aspect-square bg-gray-900 rounded-lg overflow-hidden border transition-all shadow-sm ${file.status === 'error' ? 'border-red-500/50' : 'border-gray-800 hover:border-gray-600'}`}
                 >
                   <img 
                     src={file.previewUrl} 
@@ -261,24 +426,44 @@ const App: React.FC = () => {
                   />
                   
                   {/* Status Indicator */}
-                  <div className="absolute top-2 left-2">
-                     {file.status === 'done' && <div className="bg-green-500 text-white p-1 rounded-full"><IconCheck size={12}/></div>}
-                     {file.status === 'processing' && <div className="animate-spin w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full"></div>}
-                     {file.status === 'error' && <div className="bg-red-500 text-white p-1 rounded-full"><IconX size={12}/></div>}
+                  <div className="absolute top-2 left-2 pointer-events-none z-10">
+                     {file.status === 'done' && <div className="bg-green-500 text-white p-1 rounded-full shadow-lg"><IconCheck size={12}/></div>}
+                     {file.status === 'processing' && <div className="animate-spin w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full shadow-lg"></div>}
+                     {file.status === 'error' && <div className="bg-red-500 text-white p-1 rounded-full shadow-lg" title={file.errorMsg}><IconX size={12}/></div>}
                   </div>
 
                   {/* Hover Actions */}
                   <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-2">
                      <div className="flex justify-between items-end">
-                       <span className="text-xs text-white truncate max-w-[70%] drop-shadow-md">
-                         {file.originalFile.name}
-                       </span>
-                       <button 
-                         onClick={(e) => { e.stopPropagation(); removeFile(file.id); }}
-                         className="p-1.5 bg-red-600 hover:bg-red-500 text-white rounded shadow-sm"
-                       >
-                         <IconTrash size={14} />
-                       </button>
+                       {file.status === 'error' ? (
+                          <span className="text-xs text-red-300 truncate max-w-[50%] drop-shadow-md pb-1 font-medium" title={file.errorMsg}>
+                             {file.errorMsg || 'Failed'}
+                          </span>
+                       ) : (
+                          <span className="text-xs text-white truncate max-w-[50%] drop-shadow-md pb-1">
+                             {file.originalFile.name}
+                          </span>
+                       )}
+                       
+                       <div className="flex space-x-1">
+                         {/* Only show individual download if processed/applied */}
+                         {file.status === 'done' && (
+                           <button 
+                             onClick={(e) => { e.stopPropagation(); handleDownloadFile(file); }}
+                             className="p-1.5 bg-green-600 hover:bg-green-500 text-white rounded shadow-sm transition-colors"
+                             title="Download Watermarked Image"
+                           >
+                             <IconDownload size={14} />
+                           </button>
+                         )}
+                         <button 
+                           onClick={(e) => { e.stopPropagation(); removeFile(file.id); }}
+                           className="p-1.5 bg-red-600 hover:bg-red-500 text-white rounded shadow-sm transition-colors"
+                           title="Remove File"
+                         >
+                           <IconTrash size={14} />
+                         </button>
+                       </div>
                      </div>
                   </div>
                 </div>
