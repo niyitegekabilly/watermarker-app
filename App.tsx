@@ -226,6 +226,9 @@ const App: React.FC = () => {
     setProgress({ current: 0, total: files.length });
     const zip = new JSZip();
     const CONCURRENCY = 3;
+    
+    let successCount = 0;
+    let failCount = 0;
 
     // Helper to process a chunk
     const processChunk = async (chunk: ProcessedFile[]) => {
@@ -234,7 +237,7 @@ const App: React.FC = () => {
            let blob = file.processedBlob;
 
            // If not already processed (or if we want to ensure latest settings, but updateSettings handles invalidation)
-           // If status is idle, we must process.
+           // If status is idle or error, we must process.
            if (file.status !== 'done' || !blob) {
              setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'processing', errorMsg: undefined } : f));
              
@@ -250,7 +253,7 @@ const App: React.FC = () => {
            const ext = settings.format.split('/')[1];
            zip.file(`watermarked_${file.originalFile.name.split('.')[0]}.${ext}`, blob);
 
-           // Update file status to DONE and update Thumbnail
+           // Update file status to DONE and update Thumbnail if necessary
            setFiles(prev => prev.map(f => {
              if (f.id === file.id) {
                // Only update URL if it was generated fresh or different
@@ -268,11 +271,14 @@ const App: React.FC = () => {
              }
              return f;
            }));
+           
+           successCount++;
 
          } catch (error: any) {
            console.error(`Error processing file ${file.id}:`, error);
            const msg = error.message || 'Processing Failed';
            setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'error', errorMsg: msg } : f));
+           failCount++;
          } finally {
            setProgress(prev => ({ ...prev, current: prev.current + 1 }));
          }
@@ -291,17 +297,37 @@ const App: React.FC = () => {
       if (Object.keys(zip.files).length > 0) {
         const content = await zip.generateAsync({ type: 'blob' });
         saveAs(content, 'watermarked_images.zip');
+        
+        // Notification
+        if (failCount > 0) {
+           setNotification({
+             message: `Batch complete: Exported ${successCount}, Failed ${failCount}.`,
+             type: 'error'
+           });
+        } else {
+           setNotification({
+             message: `Successfully exported ${successCount} images.`,
+             type: 'success'
+           });
+        }
       } else {
         if (files.length > 0) {
-            alert("No images were successfully processed.");
+            setNotification({
+              message: "No images were successfully processed.",
+              type: 'error'
+            });
         }
       }
     } catch (e) {
-      alert("Failed to create ZIP file");
+      setNotification({
+        message: "Failed to create ZIP file.",
+        type: 'error'
+      });
     }
 
     setIsProcessing(false);
     setProcessingAction(null);
+    setTimeout(() => setNotification(null), 4000);
   };
 
   // --- UI ---

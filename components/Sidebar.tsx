@@ -1,5 +1,5 @@
 import React from 'react';
-import { WatermarkSettings, Position, DEFAULT_SETTINGS, WatermarkType } from '../types';
+import { WatermarkSettings, Position, DEFAULT_SETTINGS, WatermarkType, DEFAULT_LOGO } from '../types';
 import { IconType, IconImage, IconRefresh } from './Icons';
 
 interface SidebarProps {
@@ -15,6 +15,15 @@ const Sidebar: React.FC<SidebarProps> = ({ settings, updateSettings, resetSettin
       const file = e.target.files[0];
       const url = URL.createObjectURL(file);
       updateSettings({ logoFile: file, logoUrl: url });
+    }
+  };
+
+  const handleTypeChange = (type: WatermarkType) => {
+    if (type === 'logo' && !settings.logoUrl) {
+      // If switching to logo and empty, load default
+      updateSettings({ type, logoUrl: DEFAULT_LOGO });
+    } else {
+      updateSettings({ type });
     }
   };
 
@@ -56,14 +65,14 @@ const Sidebar: React.FC<SidebarProps> = ({ settings, updateSettings, resetSettin
         {/* Type Selector */}
         <div className="flex bg-gray-800 rounded-lg p-1">
           <button
-            onClick={() => updateSettings({ type: 'text' })}
+            onClick={() => handleTypeChange('text')}
             className={`flex-1 flex items-center justify-center py-2 text-sm font-medium rounded-md transition-all
               ${settings.type === 'text' ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-white'}`}
           >
             <IconType size={16} className="mr-2" /> Text
           </button>
           <button
-            onClick={() => updateSettings({ type: 'logo' })}
+            onClick={() => handleTypeChange('logo')}
             className={`flex-1 flex items-center justify-center py-2 text-sm font-medium rounded-md transition-all
               ${settings.type === 'logo' ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-white'}`}
           >
@@ -124,12 +133,17 @@ const Sidebar: React.FC<SidebarProps> = ({ settings, updateSettings, resetSettin
             <>
               <div>
                 <label className="block text-sm mb-1 text-gray-300">Upload Logo</label>
-                <input
-                  type="file"
-                  accept="image/png, image/jpeg, image/svg+xml"
-                  onChange={handleLogoUpload}
-                  className="w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-gray-800 file:text-blue-400 hover:file:bg-gray-700"
-                />
+                <div className="flex gap-2 items-center">
+                  <input
+                    type="file"
+                    accept="image/png, image/jpeg, image/svg+xml"
+                    onChange={handleLogoUpload}
+                    className="w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-gray-800 file:text-blue-400 hover:file:bg-gray-700"
+                  />
+                </div>
+                {settings.logoUrl === DEFAULT_LOGO && (
+                  <p className="text-[10px] text-gray-500 mt-1">Using default VJN logo.</p>
+                )}
               </div>
               <div>
                 <label className="block text-xs mb-1 text-gray-400">Scale ({settings.logoScale}%)</label>

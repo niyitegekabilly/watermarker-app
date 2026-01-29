@@ -144,23 +144,42 @@ export const applyWatermark = async (
 
     // --- Render ---
     if (settings.tiled) {
-       const spacingX = (settings.tileSpacing / 100) * img.width;
-       const spacingY = spacingX; 
+       // Calculate the bounding box of the rotated watermark to ensure proper spacing
+       // regardless of rotation angle.
+       const rad = (settings.rotation * Math.PI) / 180;
+       const absSin = Math.abs(Math.sin(rad));
+       const absCos = Math.abs(Math.cos(rad));
        
-       // Calculate diagonal to determine safe rendering bounds for rotation
-       // This ensures we draw elements that are partially off-screen but rotated into view
-       const diagonal = Math.sqrt(wmWidth * wmWidth + wmHeight * wmHeight);
+       const rotatedWmWidth = wmWidth * absCos + wmHeight * absSin;
+       const rotatedWmHeight = wmWidth * absSin + wmHeight * absCos;
+
+       const spacingPx = (settings.tileSpacing / 100) * img.width;
+
+       const stepX = rotatedWmWidth + spacingPx;
+       const stepY = rotatedWmHeight + spacingPx;
+
+       // Calculate how many columns/rows are needed to cover the image
+       // Add padding cols/rows to ensure edges are fully covered
+       const cols = Math.ceil(img.width / stepX) + 2;
+       const rows = Math.ceil(img.height / stepY) + 2;
        
-       // Add a buffer to ensuring we cover the edges completely
-       const buffer = Math.max(diagonal, spacingX, spacingY);
+       // Calculate total dimensions of the grid
+       const gridWidth = (cols - 1) * stepX;
+       const gridHeight = (rows - 1) * stepY;
 
-       const stepX = wmWidth + spacingX;
-       const stepY = wmHeight + spacingY;
+       // Determine start coordinates to center the grid on the image
+       const startCenterX = (img.width - gridWidth) / 2;
+       const startCenterY = (img.height - gridHeight) / 2;
 
-       // Start from negative coordinates to ensure top/left edges are covered
-       for (let y = -buffer; y < img.height + buffer; y += stepY) {
-         for (let x = -buffer; x < img.width + buffer; x += stepX) {
-            drawContent(x, y);
+       for (let r = 0; r < rows; r++) {
+         for (let c = 0; c < cols; c++) {
+            const cx = startCenterX + c * stepX;
+            const cy = startCenterY + r * stepY;
+            
+            // drawContent calculates center based on (x + w/2, y + h/2)
+            // so we must pass the top-left coordinate of the unrotated box
+            // that results in the center being (cx, cy)
+            drawContent(cx - wmWidth / 2, cy - wmHeight / 2);
          }
        }
     } else {
