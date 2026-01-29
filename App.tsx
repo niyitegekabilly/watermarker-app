@@ -29,6 +29,9 @@ const App: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingAction, setProcessingAction] = useState<'batch' | 'apply' | null>(null);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
+  
+  // Toast Notification State
+  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -104,12 +107,15 @@ const App: React.FC = () => {
   const handleDownloadFile = (file: ProcessedFile) => {
     if (file.status !== 'done' || !file.processedBlob) return;
     
+    // Determine extension from the actual blob type, not the current settings
+    // This ensures that if settings change after processing, the download is still correct
+    const mimeType = file.processedBlob.type;
     const extMap: Record<string, string> = {
         'image/jpeg': 'jpg',
         'image/png': 'png',
         'image/webp': 'webp'
     };
-    const ext = extMap[settings.format] || 'jpg';
+    const ext = extMap[mimeType] || 'jpg';
     
     const originalName = file.originalFile.name;
     const nameWithoutExt = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
@@ -146,6 +152,10 @@ const App: React.FC = () => {
     setIsProcessing(true);
     setProcessingAction('apply');
     setProgress({ current: 0, total: targetFiles.length });
+    
+    let successCount = 0;
+    let failCount = 0;
+
     const CONCURRENCY = 3;
 
     const processChunk = async (chunk: ProcessedFile[]) => {
@@ -171,11 +181,13 @@ const App: React.FC = () => {
                }
                return f;
              }));
+             successCount++;
 
          } catch (error: any) {
            console.error(`Error processing file ${file.id}:`, error);
            const msg = error.message || 'Processing Failed';
            setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'error', errorMsg: msg } : f));
+           failCount++;
          } finally {
            setProgress(prev => ({ ...prev, current: prev.current + 1 }));
          }
@@ -190,6 +202,19 @@ const App: React.FC = () => {
 
     setIsProcessing(false);
     setProcessingAction(null);
+    
+    // Show confirmation
+    const message = failCount > 0 
+      ? `Process complete: ${successCount} updated, ${failCount} failed.`
+      : `Successfully updated ${successCount} images.`;
+      
+    setNotification({
+      message,
+      type: failCount > 0 ? 'error' : 'success'
+    });
+
+    // Auto dismiss
+    setTimeout(() => setNotification(null), 4000);
   };
 
   // --- Batch Processing (Export) ---
@@ -446,8 +471,8 @@ const App: React.FC = () => {
                        )}
                        
                        <div className="flex space-x-1">
-                         {/* Only show individual download if processed/applied */}
-                         {file.status === 'done' && (
+                         {/* Individual Download Button */}
+                         {file.status === 'done' && file.processedBlob && (
                            <button 
                              onClick={(e) => { e.stopPropagation(); handleDownloadFile(file); }}
                              className="p-1.5 bg-green-600 hover:bg-green-500 text-white rounded shadow-sm transition-colors"
@@ -472,6 +497,15 @@ const App: React.FC = () => {
           )}
         </div>
       </main>
+
+      {/* Toast Notification */}
+      {notification && (
+        <div className={`fixed bottom-6 left-1/2 transform -translate-x-1/2 px-6 py-3 rounded-lg shadow-xl text-white text-sm font-medium z-50 flex items-center animate-in fade-in slide-in-from-bottom-4
+          ${notification.type === 'error' ? 'bg-red-600' : 'bg-green-600'}`}>
+          {notification.type === 'error' ? <IconX className="mr-2" size={18} /> : <IconCheck className="mr-2" size={18} />}
+          {notification.message}
+        </div>
+      )}
 
       {/* Modal */}
       {previewFile && (

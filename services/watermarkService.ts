@@ -78,7 +78,6 @@ export const applyWatermark = async (
     let drawContent: (x: number, y: number) => void;
 
     if (settings.type === 'text') {
-      // CHANGED: Use image height for font sizing instead of width
       const fontSizePx = (settings.fontSize / 100) * img.height;
       ctx.font = `bold ${fontSizePx}px ${settings.fontFamily}`;
       ctx.textBaseline = 'top';
@@ -88,21 +87,26 @@ export const applyWatermark = async (
       wmHeight = fontSizePx;
 
       drawContent = (x, y) => {
+        ctx.save();
+        
+        // Translate to center of the tile
         ctx.translate(x + wmWidth / 2, y + wmHeight / 2);
         ctx.rotate((settings.rotation * Math.PI) / 180);
-        ctx.translate(-(x + wmWidth / 2), -(y + wmHeight / 2));
+        
+        // Draw relative to center
+        const drawX = -wmWidth / 2;
+        const drawY = -wmHeight / 2;
 
         if (settings.stroke) {
           ctx.strokeStyle = settings.strokeColor;
           ctx.lineWidth = fontSizePx * 0.05;
           ctx.lineJoin = 'round';
-          ctx.strokeText(settings.text, x, y);
+          ctx.strokeText(settings.text, drawX, drawY);
         }
         ctx.fillStyle = settings.color;
-        ctx.fillText(settings.text, x, y);
+        ctx.fillText(settings.text, drawX, drawY);
         
-        // Reset transform for next tile
-        ctx.setTransform(1, 0, 0, 1, 0, 0); 
+        ctx.restore();
       };
 
     } else {
@@ -116,8 +120,9 @@ export const applyWatermark = async (
       wmHeight = logoImg.height * scaleFactor;
 
       drawContent = (x, y) => {
-        // Handle rotation for images
-        // Translate to center of watermark
+        ctx.save();
+        
+        // Translate to center
         const cx = x + wmWidth / 2;
         const cy = y + wmHeight / 2;
 
@@ -129,34 +134,32 @@ export const applyWatermark = async (
            ctx.shadowBlur = 4;
            ctx.shadowOffsetX = 2;
            ctx.shadowOffsetY = 2;
-        } else {
-           ctx.shadowColor = 'transparent';
-           ctx.shadowBlur = 0;
-           ctx.shadowOffsetX = 0;
-           ctx.shadowOffsetY = 0;
         }
 
         ctx.drawImage(logoImg, -wmWidth / 2, -wmHeight / 2, wmWidth, wmHeight);
         
-        // Clear shadow settings after draw to be safe
-        ctx.shadowColor = 'transparent';
-        ctx.shadowBlur = 0;
-        ctx.shadowOffsetX = 0;
-        ctx.shadowOffsetY = 0;
-        
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.restore();
       };
     }
 
     // --- Render ---
     if (settings.tiled) {
-       // Simple grid tiling
        const spacingX = (settings.tileSpacing / 100) * img.width;
-       const spacingY = spacingX; // Keep square aspect for spacing roughly
+       const spacingY = spacingX; 
        
-       // Start drawing off-canvas to ensure rotation doesn't clip corners
-       for (let x = -wmWidth; x < img.width; x += wmWidth + spacingX) {
-         for (let y = -wmHeight; y < img.height; y += wmHeight + spacingY) {
+       // Calculate diagonal to determine safe rendering bounds for rotation
+       // This ensures we draw elements that are partially off-screen but rotated into view
+       const diagonal = Math.sqrt(wmWidth * wmWidth + wmHeight * wmHeight);
+       
+       // Add a buffer to ensuring we cover the edges completely
+       const buffer = Math.max(diagonal, spacingX, spacingY);
+
+       const stepX = wmWidth + spacingX;
+       const stepY = wmHeight + spacingY;
+
+       // Start from negative coordinates to ensure top/left edges are covered
+       for (let y = -buffer; y < img.height + buffer; y += stepY) {
+         for (let x = -buffer; x < img.width + buffer; x += stepX) {
             drawContent(x, y);
          }
        }

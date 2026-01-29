@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { ProcessedFile, WatermarkSettings } from '../types';
 import { applyWatermark } from '../services/watermarkService';
 import { IconX, IconDownload, IconCheck } from './Icons';
@@ -14,6 +14,9 @@ const PreviewModal: React.FC<PreviewModalProps> = ({ file, settings, onClose, on
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [currentBlob, setCurrentBlob] = useState<Blob | null>(null);
   const [loading, setLoading] = useState(true);
+  
+  // Track the current URL to revoke it properly on unmount or update
+  const urlRef = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -23,11 +26,22 @@ const PreviewModal: React.FC<PreviewModalProps> = ({ file, settings, onClose, on
       try {
         // Generate a preview blob using the current settings
         const blob = await applyWatermark(file.originalFile, settings);
+        
         if (active) {
           const url = URL.createObjectURL(blob);
+          
+          // Revoke previous URL if it exists to avoid memory leaks
+          if (urlRef.current) {
+            URL.revokeObjectURL(urlRef.current);
+          }
+          urlRef.current = url;
+
           setPreviewSrc(url);
           setCurrentBlob(blob);
           setLoading(false);
+        } else {
+          // If cancelled, revoke the created url immediately
+          URL.revokeObjectURL(URL.createObjectURL(blob)); 
         }
       } catch (e) {
         console.error("Preview generation failed", e);
@@ -35,13 +49,24 @@ const PreviewModal: React.FC<PreviewModalProps> = ({ file, settings, onClose, on
       }
     };
 
-    generatePreview();
+    // Debounce slightly to prevent flashing on rapid slider changes if needed, 
+    // but for now direct call is responsive enough for canvas
+    const timeoutId = setTimeout(generatePreview, 50);
 
     return () => {
       active = false;
-      if (previewSrc) URL.revokeObjectURL(previewSrc);
+      clearTimeout(timeoutId);
     };
   }, [file, settings]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (urlRef.current) {
+        URL.revokeObjectURL(urlRef.current);
+      }
+    };
+  }, []);
 
   const handleDownload = () => {
     if (!previewSrc) return;
@@ -97,20 +122,31 @@ const PreviewModal: React.FC<PreviewModalProps> = ({ file, settings, onClose, on
 
         {/* Content */}
         <div className="flex-1 overflow-hidden bg-gray-950/50 flex items-center justify-center p-6 relative">
-           {loading ? (
-             <div className="text-center">
-               <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500 mx-auto mb-4"></div>
-               <p className="text-gray-400 text-sm">Rendering Preview...</p>
-             </div>
-           ) : (
-             previewSrc && (
-               <img 
-                src={previewSrc} 
-                alt="Preview" 
-                className="max-w-full max-h-full object-contain shadow-lg" 
-               />
-             )
+           
+           {/* Image Layer */}
+           {previewSrc && (
+             <img 
+              src={previewSrc} 
+              alt="Preview" 
+              className={`max-w-full max-h-full object-contain shadow-lg transition-all duration-300 ${loading ? 'opacity-40 blur-sm scale-[0.99]' : 'opacity-100 scale-100'}`} 
+             />
            )}
+
+           {/* Loading Overlay */}
+           {loading && (
+             <div className="absolute inset-0 flex items-center justify-center z-20">
+               <div className="bg-gray-900/80 backdrop-blur-md px-6 py-4 rounded-xl shadow-2xl border border-gray-700 flex flex-col items-center animate-in fade-in zoom-in duration-200">
+                 <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent mb-3"></div>
+                 <p className="text-gray-200 text-sm font-medium tracking-wide">Updating Preview...</p>
+               </div>
+             </div>
+           )}
+
+           {/* Initial/Error State */}
+           {!loading && !previewSrc && (
+             <div className="text-gray-500 text-sm">Failed to generate preview</div>
+           )}
+
         </div>
         
         {/* Footer */}
@@ -121,15 +157,15 @@ const PreviewModal: React.FC<PreviewModalProps> = ({ file, settings, onClose, on
            <div className="flex space-x-3 w-full sm:w-auto justify-end">
              <button 
                onClick={handleDownload}
-               disabled={loading}
-               className="flex items-center justify-center bg-gray-800 hover:bg-gray-700 text-gray-200 px-4 py-2 rounded-lg text-sm font-medium transition-colors border border-gray-700"
+               disabled={loading || !previewSrc}
+               className="flex items-center justify-center bg-gray-800 hover:bg-gray-700 text-gray-200 px-4 py-2 rounded-lg text-sm font-medium transition-colors border border-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
              >
                <IconDownload className="mr-2" size={16} /> 
                Download Preview
              </button>
              <button 
                onClick={handleApply}
-               disabled={loading}
+               disabled={loading || !currentBlob}
                className="flex items-center justify-center bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg text-sm font-bold shadow-lg shadow-blue-900/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
              >
                <IconCheck className="mr-2" size={16} /> 
